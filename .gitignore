@@ -13,3 +13,4 @@ venv/
 # capturas y basura local
 pantallas/
 *.log
+agente_memoria.json
