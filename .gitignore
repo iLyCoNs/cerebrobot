@@ -1,0 +1,15 @@
+# secretos — NUNCA subir
+.env
+bot_out.log
+bot_err.log
+nvidia_state.json
+
+# entornos y caché
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# capturas y basura local
+pantallas/
+*.log

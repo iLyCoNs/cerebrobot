@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: cerebro-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python discord_bot.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_OWNER_ID
+        sync: false
+      - key: DISCORD_AUTO_CHANNEL
+        sync: false
+      - key: NVIDIA_API_KEYS
+        sync: false
