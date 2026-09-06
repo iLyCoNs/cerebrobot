@@ -43,8 +43,10 @@ from agente.memory import Memory  # noqa: E402
 
 try:
     import voice_listen as _voice_listen
-except Exception:  # pragma: no cover
+    _voice_import_error = ""
+except Exception as _exc:  # pragma: no cover
     _voice_listen = None
+    _voice_import_error = f"{type(_exc).__name__}: {_exc}"
 VOICE_OK = bool(_voice_listen and _voice_listen.VOICE_LIBS_OK)
 
 API = "https://discord.com/api/v10"
@@ -604,6 +606,14 @@ def main() -> int:
         music_channel=env.get("DISCORD_MUSIC_CHANNEL", "").strip(),
         flavi_webhook=env.get("FLAVIBOT_WEBHOOK_URL", "").strip(),
         groq_key=env.get("GROQ_API_KEY", "").strip(),
+    )
+    print(
+        "[voz] VOICE_OK=%s groq_key=%s error_import=%s"
+        % (
+            VOICE_OK,
+            "si" if bot.groq_key else "NO",
+            _voice_import_error or "-",
+        )
     )
     bot.run_forever()
 
