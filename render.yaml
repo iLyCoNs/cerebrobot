@@ -17,3 +17,5 @@ services:
         sync: false
       - key: NVIDIA_API_KEYS
         sync: false
+      - key: GROQ_API_KEY
+        sync: false

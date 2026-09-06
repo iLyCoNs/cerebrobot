@@ -64,7 +64,7 @@ def load_env() -> dict:
                 continue
             name, _, value = line.partition("=")
             env[name.strip()] = value.strip().strip('"').strip("'")
-    env.update({k: v for k, v in os.environ.items() if k.startswith("DISCORD_")})
+    env.update({k: v for k, v in os.environ.items() if v})  # el entorno real manda
     return env
 
 
