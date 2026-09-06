@@ -284,12 +284,19 @@ class DiscordBot:
             if self.voice_session.guild_id == gid and self.voice_session.channel_id == cid:
                 return
             self._stop_voice_session()
-            self._voice_guild_data.setdefault(gid, {}).pop("token", None)
-            self._voice_guild_data.setdefault(gid, {}).pop("endpoint", None)
         if not self.owner_voice:
             return
         gid, cid = self.owner_voice
+        ent = self._voice_guild_data.setdefault(gid, {})
+        ent.pop("session_id", None)
+        ent.pop("token", None)
+        ent.pop("endpoint", None)
+        # ciclo salir->entrar: tras un redeploy Discord puede creer al bot ya
+        # conectado y no emitir VOICE_STATE_UPDATE (sin session_id no hay voz)
+        self._voice_op4(gid, None)
+        time.sleep(1.2)
         self._voice_op4(gid, cid)
+        print(f"[voz] uniendose a canal {cid} (guild {gid})", flush=True)
 
     def _try_build_voice_session(self) -> None:
         if not VOICE_OK or not self.groq_key or self.voice_session or not self.owner_voice:
