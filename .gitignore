@@ -14,3 +14,5 @@ venv/
 pantallas/
 *.log
 agente_memoria.json
+bot_memorias.jsonl
+autoping.cmd

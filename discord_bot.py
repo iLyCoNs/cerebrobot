@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -59,10 +61,11 @@ def load_env() -> dict:
 
 
 class DiscordBot:
-    def __init__(self, token: str, owner_id: str, auto_channel: str = "") -> None:
+    def __init__(self, token: str, owner_id: str, auto_channel: str = "", music_channel: str = "") -> None:
         self.token = token
         self.owner_id = str(owner_id)
         self.auto_channel = str(auto_channel)
+        self.music_channel = str(music_channel)
         self.ws: websocket.WebSocket | None = None
         self.heartbeat_interval = 30.0
         self.last_heartbeat = 0.0
@@ -71,6 +74,9 @@ class DiscordBot:
         self.memory = Memory("agente_memoria.json")
         self.brain = Brain(LLM(), memory=self.memory)
         self.busy = False
+        self.memory_log = _ROOT / "bot_memorias.jsonl"
+        self.turns: list = []
+        self._load_turns()
 
     # ------------------------------------------------------------ REST
 
@@ -112,9 +118,48 @@ class DiscordBot:
         chunks.append(text)
         return chunks
 
+    # ------------------------------------------------------------ recuerdos
+
+    def _load_turns(self) -> None:
+        try:
+            if self.memory_log.exists():
+                for line in self.memory_log.read_text(encoding="utf-8").splitlines()[-12:]:
+                    try:
+                        rec = json.loads(line)
+                        self.turns.append((rec.get("task", ""), (rec.get("answer") or "")[:200]))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _remember(self, author: str, task: str, answer: str) -> None:
+        rec = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "author": author,
+            "task": task[:500],
+            "answer": answer[:1000],
+        }
+        self.turns.append((task[:200], answer[:200]))
+        self.turns = self.turns[-12:]
+        try:
+            with open(self.memory_log, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            print(f"[memoria] no se pudo registrar: {exc}")
+
+    def _context_block(self, task: str) -> str:
+        if not self.turns:
+            return task
+        recientes = "\n".join(f"- preguntaron: {t} | respondi: {a}" for t, a in self.turns)
+        return (
+            "RECUERDOS RECIENTES de esta conversacion (para continuidad y aprendizaje; "
+            "si la tarea se relaciona, apoyate en ellos pero NO los repitas literal):\n"
+            f"{recientes}\n\nTAREA ACTUAL: {task}"
+        )
+
     # ------------------------------------------------------------ cerebro
 
-    def run_task(self, channel_id: str, task: str) -> None:
+    def run_task(self, channel_id: str, task: str, author: str = "") -> None:
         if self.busy:
             self.edit_message(channel_id, self._status_id, "ya hay una tarea en curso, espera.")
             return
@@ -126,8 +171,9 @@ class DiscordBot:
 
         def worker() -> None:
             try:
-                answer = self.brain.run(task)
+                answer = self.brain.run(self._context_block(task))
                 self.memory.remember_turn(task, answer)
+                self._remember(author, task, answer)
                 parts = self._chunk_reply(answer)
                 self.edit_message(channel_id, self._status_id, parts[0])
                 for extra in parts[1:]:
@@ -252,9 +298,26 @@ class DiscordBot:
         if task.lower() == "!ping":
             self.send_message(channel_id, "pong")
             return
+        # ------- FlaviBot: relay de comandos de musica -------
+        flavi_cmd = ""
+        low = task.lower()
+        if low.startswith("flavi "):
+            flavi_cmd = task[6:].strip()
+            if flavi_cmd and not flavi_cmd.startswith("!"):
+                flavi_cmd = "!" + flavi_cmd
+        else:
+            m = re.match(r"^(?:pon|play|reproduce|escucha)\s+(.+)$", task, re.IGNORECASE)
+            if m and not low.startswith("!"):
+                flavi_cmd = f"!play {m.group(1).strip()}"
+        if flavi_cmd:
+            target = self.music_channel or channel_id
+            self.send_message(target, flavi_cmd[:2000])
+            self.send_message(channel_id, f"🎹 enviado a FlaviBot → `{flavi_cmd}`")
+            self._remember(author.get("username", "?"), task, f"[flavi] {flavi_cmd}")
+            return
         if not task or task.lower() in ("!estado", "!ping"):
             return
-        self.run_task(channel_id, task)
+        self.run_task(channel_id, task, author.get("username", "?"))
 
 
 def serve_health() -> None:
@@ -292,7 +355,12 @@ def main() -> int:
         print("[modo captura] sin DISCORD_OWNER_ID: se registrara el id de todo mensaje recibido")
     auto = env.get("DISCORD_AUTO_CHANNEL", "").strip()
     threading.Thread(target=serve_health, daemon=True).start()
-    bot = DiscordBot(token, owner, auto_channel=auto)
+    bot = DiscordBot(
+        token,
+        owner,
+        auto_channel=auto,
+        music_channel=env.get("DISCORD_MUSIC_CHANNEL", "").strip(),
+    )
     bot.run_forever()
 
 
