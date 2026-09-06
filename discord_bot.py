@@ -61,11 +61,13 @@ def load_env() -> dict:
 
 
 class DiscordBot:
-    def __init__(self, token: str, owner_id: str, auto_channel: str = "", music_channel: str = "") -> None:
+    def __init__(self, token: str, owner_id: str, auto_channel: str = "", music_channel: str = "",
+                 flavi_webhook: str = "") -> None:
         self.token = token
         self.owner_id = str(owner_id)
         self.auto_channel = str(auto_channel)
         self.music_channel = str(music_channel)
+        self.flavi_webhook = str(flavi_webhook)
         self.ws: websocket.WebSocket | None = None
         self.heartbeat_interval = 30.0
         self.last_heartbeat = 0.0
@@ -196,13 +198,33 @@ class DiscordBot:
             return res
         return peticion
 
+    def _flavi_webhook_play(self, query: str) -> bool:
+        try:
+            r = requests.post(
+                self.flavi_webhook,
+                params={"query": query},
+                json={"query": query},
+                timeout=30,
+            )
+            return r.status_code < 400
+        except Exception:
+            return False
+
     def _send_flavi(self, target: str, origen: str, flavi_cmd: str, razonar: str, author: str) -> None:
         try:
             if razonar:
                 elegida = self._razonar_cancion(razonar)
                 flavi_cmd = f"!play {elegida}"
+            tarea = f"pon {razonar}" if razonar else f"flavi {flavi_cmd}"
+            if self.flavi_webhook:
+                query = flavi_cmd[6:].strip() if flavi_cmd.lower().startswith("!play ") else flavi_cmd.lstrip("!")
+                ok = self._flavi_webhook_play(query)
+                self.send_message(origen, ("🎹 FlaviBot toca" if ok else "⚠️ FlaviBot no respondió al webhook")
+                                  + f" → `{query}`")
+                self._remember(author, tarea, f"[flavi-webhook {'ok' if ok else 'fallo'}] {query}")
+                return
             self.send_message(target, flavi_cmd[:2000])
-            self._remember(author, (f"pon {razonar}" if razonar else f"flavi {flavi_cmd}"), f"[flavi] {flavi_cmd}")
+            self._remember(author, tarea, f"[flavi] {flavi_cmd}")
             if target != origen:
                 self.send_message(origen, f"🎹 razonado y enviado a FlaviBot → `{flavi_cmd}`")
         except Exception as exc:
@@ -417,6 +439,7 @@ def main() -> int:
         owner,
         auto_channel=auto,
         music_channel=env.get("DISCORD_MUSIC_CHANNEL", "").strip(),
+        flavi_webhook=env.get("FLAVIBOT_WEBHOOK_URL", "").strip(),
     )
     bot.run_forever()
 
