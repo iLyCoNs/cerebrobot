@@ -157,6 +157,17 @@ class DiscordBot:
             f"{recientes}\n\nTAREA ACTUAL: {task}"
         )
 
+    @staticmethod
+    def _clean_answer(text: str) -> str:
+        t = str(text).strip()
+        if t.startswith("{") and '"tool"' in t[:200]:
+            try:
+                name = json.loads(t).get("tool", "accion interna")
+            except Exception:
+                name = "accion interna"
+            return f"🛠️ ejecute una accion interna ({name}); no hay texto final que mostrar"
+        return t
+
     # ------------------------------------------------------------ cerebro
 
     def run_task(self, channel_id: str, task: str, author: str = "") -> None:
@@ -171,7 +182,7 @@ class DiscordBot:
 
         def worker() -> None:
             try:
-                answer = self.brain.run(self._context_block(task))
+                answer = self._clean_answer(self.brain.run(self._context_block(task)))
                 self.memory.remember_turn(task, answer)
                 self._remember(author, task, answer)
                 parts = self._chunk_reply(answer)
@@ -314,6 +325,9 @@ class DiscordBot:
             self.send_message(target, flavi_cmd[:2000])
             self.send_message(channel_id, f"🎹 enviado a FlaviBot → `{flavi_cmd}`")
             self._remember(author.get("username", "?"), task, f"[flavi] {flavi_cmd}")
+            return
+        # comandos con "!" son de otros bots (FlaviBot, etc.): Cerebro no interfiere
+        if low.startswith("!"):
             return
         if not task or task.lower() in ("!estado", "!ping"):
             return
