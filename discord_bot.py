@@ -41,6 +41,12 @@ from agente.agent import Brain  # noqa: E402
 from agente.llm import LLM  # noqa: E402
 from agente.memory import Memory  # noqa: E402
 
+try:
+    import voice_listen as _voice_listen
+except Exception:  # pragma: no cover
+    _voice_listen = None
+VOICE_OK = bool(_voice_listen and _voice_listen.VOICE_LIBS_OK)
+
 API = "https://discord.com/api/v10"
 INTENTS = 1 | 512 | 32768  # GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT
 PREFIX = "!cerebro "
@@ -62,12 +68,18 @@ def load_env() -> dict:
 
 class DiscordBot:
     def __init__(self, token: str, owner_id: str, auto_channel: str = "", music_channel: str = "",
-                 flavi_webhook: str = "") -> None:
+                 flavi_webhook: str = "", groq_key: str = "") -> None:
         self.token = token
         self.owner_id = str(owner_id)
         self.auto_channel = str(auto_channel)
         self.music_channel = str(music_channel)
         self.flavi_webhook = str(flavi_webhook)
+        self.groq_key = str(groq_key)
+        self.voice_session = None
+        self.owner_voice: tuple[str, str] | None = None
+        self.voice_reply_channel = ""
+        self._voice_guild_data: dict = {}
+        self._usernames: dict = {}
         self.ws: websocket.WebSocket | None = None
         self.heartbeat_interval = 30.0
         self.last_heartbeat = 0.0
@@ -230,6 +242,111 @@ class DiscordBot:
         except Exception as exc:
             print(f"[flavi] error: {exc}")
 
+    # ------------------------------------------------------------ voz
+
+    def _username(self, uid: str) -> str:
+        if not uid:
+            return ""
+        if uid in self._usernames:
+            return self._usernames[uid]
+        try:
+            r = requests.get(f"{API}/users/{uid}", headers=self._headers(), timeout=10)
+            name = str(r.json().get("username", "")) if r.ok else ""
+        except Exception:
+            name = ""
+        self._usernames[uid] = name
+        return name
+
+    def _voice_op4(self, guild_id: str, channel_id: str | None) -> None:
+        self._send_json({
+            "op": 4,
+            "d": {
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "self_mute": True,
+                "self_deaf": False,
+            },
+        })
+
+    def _maybe_join_voice(self) -> None:
+        if not VOICE_OK or not self.groq_key:
+            return
+        if self.voice_session:
+            gid, cid = self.owner_voice or ("", "")
+            if self.voice_session.guild_id == gid and self.voice_session.channel_id == cid:
+                return
+            self._stop_voice_session()
+            self._voice_guild_data.setdefault(gid, {}).pop("token", None)
+            self._voice_guild_data.setdefault(gid, {}).pop("endpoint", None)
+        if not self.owner_voice:
+            return
+        gid, cid = self.owner_voice
+        self._voice_op4(gid, cid)
+
+    def _try_build_voice_session(self) -> None:
+        if not VOICE_OK or not self.groq_key or self.voice_session or not self.owner_voice:
+            return
+        gid, cid = self.owner_voice
+        ent = self._voice_guild_data.get(gid, {})
+        session_id = ent.get("session_id", "")
+        token = ent.get("token", "")
+        endpoint = ent.get("endpoint", "")
+        if not (session_id and token and endpoint):
+            return
+        try:
+            sess = _voice_listen.VoiceSession(
+                self.token, self.bot_user_id, gid, cid, session_id, token, endpoint,
+                on_utterance=self._handle_utterance,
+                groq_key=self.groq_key,
+                owner_id=self.owner_id,
+            )
+            sess.start()
+        except Exception as exc:
+            print(f"[voz] no se pudo iniciar: {exc}")
+            return
+        self.voice_session = sess
+        canal = self.voice_reply_channel or self.auto_channel
+        if canal:
+            self.send_message(canal, "👂 escuchando el canal de voz — di «cerebro» para hablarme")
+
+    def _stop_voice_session(self) -> None:
+        if self.voice_session:
+            try:
+                self.voice_session.stop()
+            except Exception:
+                pass
+            self.voice_session = None
+
+    def _leave_voice(self) -> None:
+        self._stop_voice_session()
+        gid = self.owner_voice[0] if self.owner_voice else ""
+        if gid:
+            self._voice_op4(gid, None)
+
+    def _handle_utterance(self, user_id: str, _owner_hint: str, text: str) -> None:
+        canal = self.voice_reply_channel or self.auto_channel
+        texto = text.strip()
+        low = texto.lower()
+        if not canal or not low.startswith("cerebro"):
+            return
+        uid = user_id or ""
+        tarea = texto[len("cerebro"):].lstrip(" ,.:!¡¿?").strip()
+        if uid and uid != self.owner_id:
+            self.send_message(canal, f"🙂 te escuché {self._username(uid)}, pero solo mi dueño me da órdenes")
+            return
+        if not tarea:
+            self.send_message(canal, "🧠 aquí estoy — dime «cerebro, pon <canción>» o pídeme algo")
+            return
+        print(f"[voz] dueño dice: {tarea}")
+        if tarea.lower().startswith(("pon ", "play ", "reproduce ", "escucha ")):
+            threading.Thread(
+                target=self._send_flavi,
+                args=(self.music_channel or canal, canal, "", tarea, self._username(self.owner_id) or "dueño"),
+                daemon=True,
+            ).start()
+            return
+        self.run_task(canal, tarea, "voz:" + (self._username(self.owner_id) or "dueño"))
+
     # ------------------------------------------------------------ cerebro
 
     def run_task(self, channel_id: str, task: str, author: str = "") -> None:
@@ -321,6 +438,34 @@ class DiscordBot:
                     if op == 0 and event.get("t") == "READY":
                         self.bot_user_id = event["d"]["user"]["id"]
                         print(f"READY como {event['d']['user']['username']}")
+                    elif op == 0 and event.get("t") == "GUILD_CREATE":
+                        for vs in event["d"].get("voice_states", []):
+                            if str(vs.get("user_id", "")) == self.owner_id and vs.get("channel_id"):
+                                self.owner_voice = (str(event["d"]["id"]), str(vs["channel_id"]))
+                                self._maybe_join_voice()
+                                break
+                    elif op == 0 and event.get("t") == "VOICE_STATE_UPDATE":
+                        d = event["d"]
+                        uid = str(d.get("user_id", ""))
+                        gid = str(d.get("guild_id", ""))
+                        cid = d.get("channel_id")
+                        if uid == self.owner_id:
+                            self.owner_voice = (gid, str(cid)) if cid else None
+                            self._maybe_join_voice()
+                        elif uid == self.bot_user_id:
+                            ent = self._voice_guild_data.setdefault(gid, {})
+                            if d.get("session_id"):
+                                ent["session_id"] = str(d["session_id"])
+                            if not cid and self.voice_session and self.voice_session.guild_id == gid:
+                                self._stop_voice_session()
+                            self._try_build_voice_session()
+                    elif op == 0 and event.get("t") == "VOICE_SERVER_UPDATE":
+                        d = event["d"]
+                        gid = str(d.get("guild_id", ""))
+                        ent = self._voice_guild_data.setdefault(gid, {})
+                        ent["token"] = str(d.get("token", ""))
+                        ent["endpoint"] = str(d.get("endpoint", ""))
+                        self._try_build_voice_session()
                     elif op == 0 and event.get("t") == "MESSAGE_CREATE":
                         try:
                             self.handle_message(event["d"])
@@ -371,6 +516,24 @@ class DiscordBot:
         if task.lower() == "!ping":
             self.send_message(channel_id, "pong")
             return
+        if is_owner:
+            self.voice_reply_channel = channel_id
+            low_cmd = task.lower()
+            if low_cmd in ("escucha", "escuchame", "entra a la voz"):
+                if not VOICE_OK or not self.groq_key:
+                    self.send_message(channel_id, "⚠️ voz no disponible (faltan libs de voz o GROQ_API_KEY en Render)")
+                elif self.voice_session:
+                    self.send_message(channel_id, "ya estoy escuchando la voz 👂")
+                elif not self.owner_voice:
+                    self.send_message(channel_id, "entréte a un canal de voz y me uno solo, o entra a uno ahora")
+                else:
+                    self._maybe_join_voice()
+                    self.send_message(channel_id, "👂 uniéndome a tu canal de voz…")
+                return
+            if low_cmd in ("calla", "deja de escuchar", "sal de la voz"):
+                self._leave_voice()
+                self.send_message(channel_id, "👂 dejé el canal de voz")
+                return
         # ------- FlaviBot: relay de comandos de musica -------
         low = task.lower()
         flavi_cmd = ""
@@ -440,6 +603,7 @@ def main() -> int:
         auto_channel=auto,
         music_channel=env.get("DISCORD_MUSIC_CHANNEL", "").strip(),
         flavi_webhook=env.get("FLAVIBOT_WEBHOOK_URL", "").strip(),
+        groq_key=env.get("GROQ_API_KEY", "").strip(),
     )
     bot.run_forever()
 

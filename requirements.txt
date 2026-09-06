@@ -1,2 +1,4 @@
 requests>=2.31.0
 websocket-client>=1.7.0
+PyNaCl>=1.5.0
+av>=13.0.0
