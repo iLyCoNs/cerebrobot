@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 MODEL_CHAIN = [
-    "moonshotai/kimi-k3",
     "deepseek-ai/deepseek-v4-pro-0813",
+    "moonshotai/kimi-k3",
 ]
 
 MAX_STEPS = 12
