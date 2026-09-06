@@ -168,6 +168,46 @@ class DiscordBot:
             return f"🛠️ ejecute una accion interna ({name}); no hay texto final que mostrar"
         return t
 
+    # ------------------------------------------------------------ flavi
+
+    def _razonar_cancion(self, peticion: str) -> str:
+        """Convierte 'musica de los tres' en una cancion concreta razonada por el LLM."""
+        try:
+            res = self.brain.llm.complete(
+                [
+                    {"role": "system", "content": (
+                        "Conviertes peticiones musicales en busquedas concretas para FlaviBot "
+                        "(bot de musica con prefijo !play). Razona la mejor eleccion: si piden "
+                        "una banda o artista, elige un tema representativo de el; si piden un "
+                        "genero, estilo o epoca, elige un tema clasico de ese estilo. "
+                        "Responde SOLO con la busqueda final en formato 'Artista - Cancion' "
+                        "(o el titulo exacto). Una sola linea, sin comillas, sin explicaciones, "
+                        "sin punto final, maximo 120 caracteres."
+                    )},
+                    {"role": "user", "content": f"Peticion: {peticion}"},
+                ],
+                max_tokens=120,
+            )
+        except Exception:
+            return peticion
+        res = str(res).strip().strip('"').strip("'").strip("`").replace("\n", " ").strip()
+        res = re.sub(r"^(?:!play|play)\s*", "", res, flags=re.IGNORECASE).strip()
+        if res and len(res) <= 140 and '"' not in res:
+            return res
+        return peticion
+
+    def _send_flavi(self, target: str, origen: str, flavi_cmd: str, razonar: str, author: str) -> None:
+        try:
+            if razonar:
+                elegida = self._razonar_cancion(razonar)
+                flavi_cmd = f"!play {elegida}"
+            self.send_message(target, flavi_cmd[:2000])
+            self._remember(author, (f"pon {razonar}" if razonar else f"flavi {flavi_cmd}"), f"[flavi] {flavi_cmd}")
+            if target != origen:
+                self.send_message(origen, f"🎹 razonado y enviado a FlaviBot → `{flavi_cmd}`")
+        except Exception as exc:
+            print(f"[flavi] error: {exc}")
+
     # ------------------------------------------------------------ cerebro
 
     def run_task(self, channel_id: str, task: str, author: str = "") -> None:
@@ -310,8 +350,9 @@ class DiscordBot:
             self.send_message(channel_id, "pong")
             return
         # ------- FlaviBot: relay de comandos de musica -------
-        flavi_cmd = ""
         low = task.lower()
+        flavi_cmd = ""
+        razonar = ""
         if low.startswith("flavi "):
             flavi_cmd = task[6:].strip()
             if flavi_cmd and not flavi_cmd.startswith("!"):
@@ -319,12 +360,14 @@ class DiscordBot:
         else:
             m = re.match(r"^(?:pon|play|reproduce|escucha)\s+(.+)$", task, re.IGNORECASE)
             if m and not low.startswith("!"):
-                flavi_cmd = f"!play {m.group(1).strip()}"
-        if flavi_cmd:
+                razonar = m.group(1).strip()
+        if flavi_cmd or razonar:
             target = self.music_channel or channel_id
-            self.send_message(target, flavi_cmd[:2000])
-            self.send_message(channel_id, f"🎹 enviado a FlaviBot → `{flavi_cmd}`")
-            self._remember(author.get("username", "?"), task, f"[flavi] {flavi_cmd}")
+            threading.Thread(
+                target=self._send_flavi,
+                args=(target, channel_id, flavi_cmd, razonar, author.get("username", "?")),
+                daemon=True,
+            ).start()
             return
         # comandos con "!" son de otros bots (FlaviBot, etc.): Cerebro no interfiere
         if low.startswith("!"):
