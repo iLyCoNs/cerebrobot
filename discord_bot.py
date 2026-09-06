@@ -613,7 +613,8 @@ def main() -> int:
             VOICE_OK,
             "si" if bot.groq_key else "NO",
             _voice_import_error or "-",
-        )
+        ),
+        flush=True,
     )
     bot.run_forever()
 
