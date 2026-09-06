@@ -105,6 +105,7 @@ class VoiceSession:
         self._hb_nonce = 0
         self._hb_last = 0.0
         self._seq_seen = -1
+        self._rtp_ok = False
 
         self.ssrc_user: dict[int, str] = {}
         self._bufs: dict[int, _SpeakerBuf] = {}
@@ -145,11 +146,14 @@ class VoiceSession:
     def _gateway_loop(self) -> None:
         try:
             url = f"wss://{self.endpoint}/?v=4&encoding=json"
+            print(f"[voz] conectando voice ws a {self.endpoint} ...", flush=True)
             self.ws = websocket.create_connection(url, timeout=5, sslopt={"cert_reqs": 2})
+            print("[voz] voice ws conectado", flush=True)
             hello = json_loads(self.ws.recv())
             if hello.get("op") != 8:
                 raise RuntimeError(f"voice hello inesperado: {str(hello)[:120]}")
             self.heartbeat_interval = hello["d"].get("heartbeat_interval", 13750) / 1000.0
+            print("[voz] voice hello ok, identificando ...", flush=True)
             self._hb_last = time.time()
             self._send_json({
                 "op": 0,
@@ -177,13 +181,14 @@ class VoiceSession:
                 if op == 2:  # ready: ssrc + ip:port internos para descubrimiento
                     d = ev["d"]
                     self.ssrc = d["ssrc"]
+                    print(f"[voz] voice ready: ssrc={self.ssrc} udp={d['ip']}:{d['port']}", flush=True)
                     self._udp_discovery(d["ip"], d["port"])
                 elif op == 4:  # session description: clave secreta
                     d = ev["d"]
                     self.mode = d.get("mode", "")
                     self.secret_key = bytes(d["secret_key"])
                     self.ready.set()
-                    print(f"[voz] lista en {self.channel_id} (modo {self.mode})")
+                    print(f"[voz] lista en {self.channel_id} (modo {self.mode})", flush=True)
                 elif op == 5:  # speaking: ssrc -> usuario
                     d = ev["d"]
                     self.ssrc_user[int(d["ssrc"])] = str(d.get("user_id", ""))
@@ -196,7 +201,7 @@ class VoiceSession:
                             self._bufs.pop(ssrc, None)
         except Exception as exc:
             if not self._stop.is_set():
-                print(f"[voz] gateway caida: {exc}")
+                print(f"[voz] gateway caida: {exc}", flush=True)
 
     # ------------------------------------------------------------ UDP / RTP
 
@@ -204,11 +209,13 @@ class VoiceSession:
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.settimeout(10)
         pkt = struct.pack(">H", 1) + struct.pack(">H", 70) + struct.pack(">I", self.ssrc) + b"\x00" * 64
+        print(f"[voz] udp discovery: enviando a {local_ip}:{local_port} ...", flush=True)
         self.udp.sendto(pkt, (local_ip, local_port))
         data, addr = self.udp.recvfrom(2048)
         ext_ip = data[8:72].split(b"\x00")[0].decode()
         ext_port = struct.unpack(">H", data[72:74])[0]
         self.ip, self.port = ext_ip, ext_port
+        print(f"[voz] udp discovery ok: ip externa {ext_ip}:{ext_port}", flush=True)
         self.udp.settimeout(1.0)
         self._send_json({
             "op": 1,
@@ -243,6 +250,9 @@ class VoiceSession:
                 continue
             except OSError:
                 break
+            if not self._rtp_ok:
+                self._rtp_ok = True
+                print("[voz] rtp: primer paquete de audio recibido", flush=True)
             opus = self._decrypt_rtp(data)
             if not opus:
                 continue
@@ -302,13 +312,14 @@ class VoiceSession:
             try:
                 text = transcribe(wav_bytes, self.groq_key)
             except Exception as exc:
-                print(f"[stt] error: {exc}")
+                print(f"[stt] error: {exc}", flush=True)
                 continue
             if text:
+                print(f"[stt] transcrito: {text}", flush=True)
                 try:
                     self.on_utterance(user_id, self.owner_id, text)
                 except Exception as exc:
-                    print(f"[stt] callback: {exc}")
+                    print(f"[stt] callback: {exc}", flush=True)
 
 
 class _SpeakerBuf:

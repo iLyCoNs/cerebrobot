@@ -37,6 +37,12 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+try:  # logs en vivo en Render (sin esto, print queda en buffer y no aparece)
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 from agente.agent import Brain  # noqa: E402
 from agente.llm import LLM  # noqa: E402
 from agente.memory import Memory  # noqa: E402
