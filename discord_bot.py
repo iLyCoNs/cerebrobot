@@ -48,7 +48,7 @@ except Exception:  # pragma: no cover
 VOICE_OK = bool(_voice_listen and _voice_listen.VOICE_LIBS_OK)
 
 API = "https://discord.com/api/v10"
-INTENTS = 1 | 512 | 32768  # GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT
+INTENTS = 1 | 512 | 1024 | 32768  # GUILDS | GUILD_MESSAGES | GUILD_VOICE_STATES | MESSAGE_CONTENT
 PREFIX = "!cerebro "
 
 
